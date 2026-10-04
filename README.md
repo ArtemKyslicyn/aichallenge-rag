@@ -2,24 +2,27 @@
 
 **Standalone RAG index / search service** for [AIChallenge](https://github.com/ArtemKyslicyn/AIChallenge) and any client that can call HTTP or Streamable HTTP MCP.
 
-Index a folder of docs (or upload files), retrieve chunks with scores, optionally filter + heuristic-rerank, then feed the context into *your* LLM. This process never calls a chat model for answers — only embeddings (API, local, or fake).
+Vector backend: **[Qdrant](https://qdrant.tech/)** — embedded on disk by default (`RAG_DATA_DIR/qdrant`), or a remote server via `QDRANT_URL`.
+
+Index a folder of docs (or upload files), retrieve chunks with cosine similarity + metadata filters, optionally filter + heuristic-rerank, then feed the context into *your* LLM. This process never calls a chat model for answers — only embeddings (API, local, or fake).
 
 | You run | AIChallenge / client sees |
 |---|---|
-| Index + search on your machine (or stand) | HTTP `/v1/*` or Guest MCP `/mcp` |
-| SQLite + numpy vectors under `RAG_DATA_DIR` | Bearer token only |
+| Qdrant index + search on your machine (or stand) | HTTP `/v1/*` or Guest MCP `/mcp` |
+| Embedded store under `RAG_DATA_DIR` (or remote Qdrant) | Bearer token only |
 
 Origin in the monorepo: `apps/rag`. This repo is the public, self-contained copy.
 
 ## Features
 
+- **Qdrant vector store** — COSINE dense vectors, payload filters (`scope`, `owner_id`, …)
 - **Corpus index** — walk `RAG_CORPUS_DIR` (md/txt/pdf with text layer, common source suffixes)
 - **Two chunk strategies** — `fixed` window vs `structural` (headings / files)
 - **User uploads** — `POST /v1/documents/upload` with optional `owner_id` scope
 - **Retrieval modes** — `raw` · `filtered` (min score) · `full` (rewrite + filter + heuristic rerank)
 - **`/v1/ask`** — returns a ready `context` / `prompt_suffix` block (no LLM inside)
 - **MCP tools** — `rag_stats`, `rag_search`, `rag_index` on `/mcp`
-- **Embeddings** — OpenAI-compatible API, optional `sentence-transformers`, or deterministic `fake` for offline demos
+- **Embeddings** — OpenAI-compatible API, optional `sentence-transformers`, or deterministic `fake`
 
 ## 5-minute local run
 
@@ -34,6 +37,7 @@ uv run python -m aichallenge_rag
 
 - Health: [http://127.0.0.1:18766/health](http://127.0.0.1:18766/health)
 - OpenAPI: [http://127.0.0.1:18766/docs](http://127.0.0.1:18766/docs)
+- Stats (`backend=qdrant`): `GET /v1/stats`
 
 With the bundled `corpus/sample.md` and `EMBEDDING_PROVIDER=fake`:
 
@@ -48,6 +52,21 @@ Tests:
 ```bash
 uv run pytest
 ```
+
+## Qdrant modes
+
+| Mode | Config | When |
+|---|---|---|
+| **Embedded** (default) | `QDRANT_URL=` empty | Local demos, Compose stand, CI |
+| **Server** | `QDRANT_URL=http://host:6333` | Shared / larger corpora |
+
+```bash
+# optional remote
+docker run -d --name qdrant -p 6333:6333 qdrant/qdrant
+export QDRANT_URL=http://127.0.0.1:6333
+```
+
+Collection name: `QDRANT_COLLECTION` (default `aichallenge_rag`).
 
 ## Connect to AIChallenge (Guest MCP)
 
@@ -65,9 +84,9 @@ Full walkthrough: [docs/connect-aichallenge.md](docs/connect-aichallenge.md).
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Liveness (no auth) |
-| `GET` | `/v1/stats` | Chunk / vector / embed mode |
+| `GET` | `/v1/stats` | Chunk / vector / Qdrant backend |
 | `POST` | `/v1/index` | Rebuild corpus (`fixed` \| `structural`) |
-| `POST` | `/v1/heal` | Rebuild vectors if chunks exist without matrix |
+| `POST` | `/v1/heal` | Index if empty / rebuild if inconsistent |
 | `POST` | `/v1/documents` | Add plain-text document (JSON) |
 | `POST` | `/v1/documents/upload` | Upload file (multipart) |
 | `GET` | `/v1/documents` | List docs (`owner_id`, `include_stand`) |
@@ -82,33 +101,18 @@ When `RAG_SHARED_TOKEN` is set, send `Authorization: Bearer <token>` on all rout
 ## Docker
 
 ```bash
-docker build -t aichallenge-rag .
-docker run --rm -p 127.0.0.1:18766:18766 \
-  -e EMBEDDING_PROVIDER=fake \
-  -e RAG_CORPUS_DIR=/app/corpus \
-  -e RAG_DATA_DIR=/app/data \
-  -v "$PWD/corpus:/app/corpus:ro" \
-  -v "$PWD/data:/app/data" \
-  aichallenge-rag
+docker compose up --build
 ```
 
-Or: `docker compose up --build` (binds loopback only — see `docker-compose.yml`).
+Binds **loopback only** `127.0.0.1:18766`. Never publish on public `:443` / `:8443` without your own edge plan.
 
-Never publish this service on public `:443` / `:8443` without your own edge plan. Prefer loopback + tunnel.
-
-Optional local embeddings image:
-
-```bash
-uv sync --extra local
-# or bake sentence-transformers into a custom image, then:
-# PATCH /v1/settings {"local_embeddings": true}
-```
+Optional local embeddings: `uv sync --extra local`, then `PATCH /v1/settings {"local_embeddings": true}`.
 
 ## Docs
 
 | Doc | Topic |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | Pipeline, store, modes |
+| [docs/architecture.md](docs/architecture.md) | Qdrant pipeline, modes |
 | [docs/api.md](docs/api.md) | HTTP + MCP contracts |
 | [docs/connect-aichallenge.md](docs/connect-aichallenge.md) | Tunnel + Guest MCP |
 | [docs/security.md](docs/security.md) | Tokens, bind, risks |
@@ -118,7 +122,8 @@ uv sync --extra local
 See [`.env.example`](.env.example). Important names:
 
 - `RAG_SHARED_TOKEN` — Bearer for HTTP + MCP (empty = open local/dev)
-- `RAG_CORPUS_DIR` / `RAG_DATA_DIR` — corpus + SQLite/numpy index
+- `RAG_CORPUS_DIR` / `RAG_DATA_DIR` — corpus + Qdrant path / meta
+- `QDRANT_URL` / `QDRANT_COLLECTION` — remote vs embedded
 - `EMBEDDING_PROVIDER` — `api` \| `local` \| `fake`
 - `LLM_API_KEY` / `ROUTERAI_KEY` — for API embeddings
 - `RAG_MODE` / `RAG_MIN_SCORE` / `RAG_TOP_K_*` — retrieval defaults
@@ -127,7 +132,8 @@ See [`.env.example`](.env.example). Important names:
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) recommended
-- Optional: embedding API key, or `uv sync --extra local` for sentence-transformers
+- `qdrant-client` (pulled by `uv sync`)
+- Optional: embedding API key, or `uv sync --extra local`
 - Optional: [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/) / ngrok for Guest MCP
 
 ## Security

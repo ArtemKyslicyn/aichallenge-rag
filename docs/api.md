@@ -23,7 +23,8 @@ curl -sS http://127.0.0.1:18766/health
 curl -sS http://127.0.0.1:18766/v1/stats
 ```
 
-Returns store counts plus `embedding_provider`, `chunk_strategy`, `embed_model_runtime`.
+Returns store counts plus `embedding_provider`, `chunk_strategy`, `embed_model_runtime`,
+`vector_backend` (`qdrant`), `collection`, and optional `qdrant_url`.
 
 ## Index
 

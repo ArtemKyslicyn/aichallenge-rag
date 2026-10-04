@@ -61,7 +61,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        store = VectorStore(settings.data_path())
+        store = VectorStore(
+            settings.data_path(),
+            qdrant_url=settings.qdrant_url,
+            collection=settings.qdrant_collection,
+        )
         embedder = build_embedder(settings)
         pipeline = RagPipeline(settings, store, embedder)
         state["store"] = store
@@ -124,6 +128,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "local_embeddings_enabled": s.local_embeddings_enabled,
             "chunk_strategy": s.rag_chunk_strategy,
             "embed_model_runtime": state["embedder"].model_id,
+            "qdrant_url": s.qdrant_url or None,
+            "vector_backend": "qdrant",
         }
 
     @app.post("/v1/index")
@@ -190,6 +196,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             include_stand=include_stand,
             all_owners=all_owners,
         )
+
+    @app.delete("/v1/documents")
+    async def delete_document(
+        source: str,
+        scope: str = "session",
+        owner_id: str = "",
+    ) -> dict[str, Any]:
+        if not source.strip():
+            raise HTTPException(422, detail="source required")
+        result = pipeline().delete_document(
+            source=source.strip(),
+            scope=scope.strip() or "session",
+            owner_id=owner_id,
+        )
+        if int(result.get("deleted_chunks") or 0) == 0:
+            raise HTTPException(404, detail="document not found")
+        return result
 
     @app.post("/v1/search")
     async def search(body: SearchRequest) -> dict[str, Any]:

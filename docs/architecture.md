@@ -10,10 +10,10 @@ corpus/ + uploads
    embedder (api | local | fake)
         │
         ▼
-   VectorStore ── SQLite chunks + vectors.npy + index_meta.json
+   Qdrant collection ── dense COSINE vectors + payload
         │
         ▼
-   search: cosine top-k
+   query_points (ANN) + metadata filter
         │
         ├── mode=raw       → return hits
         ├── mode=filtered  → drop score < min_score
@@ -27,24 +27,32 @@ corpus/ + uploads
 | `settings.py` | Env via pydantic-settings |
 | `chunking.py` | Fixed window + structural (Markdown headings) |
 | `embeddings.py` | API / local / fake embedders |
-| `store.py` | SQLite metadata + numpy matrix on disk |
+| `store.py` | **Qdrant** client (embedded path or URL) |
 | `rerank.py` | Query rewrite, score filter, token-overlap heuristic |
 | `pipeline.py` | Index, heal, upload, search orchestration |
 | `http_app.py` | FastAPI routes |
 | `mcp_server.py` | Streamable HTTP MCP tools |
 | `auth.py` | Optional Bearer middleware |
 
-## Persistence
+## Qdrant persistence
 
-Under `RAG_DATA_DIR` (default `./data` in `.env.example`):
-
-| File | Contents |
+| Mode | Location |
 |---|---|
-| `chunks.sqlite` | Chunk text + metadata (`scope`, `owner_id`, strategy, …) |
-| `vectors.npy` | L2-normalized float32 matrix aligned with chunk ids |
-| `index_meta.json` | Strategy / counts / last rebuild info |
+| Embedded | `RAG_DATA_DIR/qdrant/` + `index_meta.json` |
+| Remote | `QDRANT_URL` collection `QDRANT_COLLECTION` |
 
-Scopes:
+Each point:
+
+- **id** — UUID5 derived from `chunk_id`
+- **vector** — L2-normalized dense embedding
+- **payload** — `chunk_id`, `text`, `source`, `title`, `section`, `strategy`, `index`, `scope`, `owner_id`, `embed_model`
+
+Visibility filter on search:
+
+- `scope=stand` → always visible
+- `scope=session` → only when `owner_id` matches the request
+
+## Chunk scopes
 
 - `stand` — corpus files from `RAG_CORPUS_DIR`
 - `session` (default for uploads) — user docs, filterable by `owner_id`
@@ -53,18 +61,16 @@ Scopes:
 
 On boot the service starts a **background** heal task (does not block `/health`):
 
-1. Empty index → reindex corpus with `structural` then `fixed`
-2. Chunks without vectors → `ensure_vectors()` (API hang fuse → may fall back to fake)
-
-Budgets live in `pipeline.py` (`REBUILD_BUDGET_S`, embed batch timeout).
+1. Empty collection → reindex corpus with `structural` then `fixed`
+2. Otherwise leave the existing Qdrant points alone
 
 ## Retrieval modes
 
 | Mode | Behavior |
 |---|---|
-| `raw` | Cosine top-k as stored |
+| `raw` | Qdrant top-k as returned |
 | `filtered` | Drop hits below `RAG_MIN_SCORE` / request `min_score` |
-| `full` | Lightweight query rewrite + filter + heuristic rerank (token overlap with title/section/text) |
+| `full` | Lightweight query rewrite + filter + heuristic rerank |
 
 `/v1/ask` uses the same search path and formats hits into `context` + Russian `prompt_suffix` for the caller’s LLM.
 
@@ -76,4 +82,4 @@ Budgets live in `pipeline.py` (`REBUILD_BUDGET_S`, embed batch timeout).
 | `api` | OpenAI-compatible (`LLM_BASE_URL` + key). Missing key → fake |
 | `local` | `sentence-transformers` (`uv sync --extra local`) and `LOCAL_EMBEDDINGS_ENABLED=true` |
 
-Flipping provider at runtime: `PATCH /v1/settings`. After a provider change, rebuild or heal so vector dims stay consistent.
+Changing embed dims/model recreates the collection when incompatible.
