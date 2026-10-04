@@ -1,0 +1,28 @@
+services:
+  rag:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      RAG_HOST: 0.0.0.0
+      RAG_PORT: 18766
+      RAG_SHARED_TOKEN: ${RAG_SHARED_TOKEN:-}
+      RAG_DATA_DIR: /app/data
+      RAG_CORPUS_DIR: /app/corpus
+      RAG_CHUNK_STRATEGY: ${RAG_CHUNK_STRATEGY:-structural}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fake}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://routerai.ru/api/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      ROUTERAI_KEY: ${ROUTERAI_KEY:-}
+      LOCAL_EMBEDDINGS_ENABLED: ${LOCAL_EMBEDDINGS_ENABLED:-false}
+    volumes:
+      - rag_data:/app/data
+      - ./corpus:/app/corpus:ro
+    ports:
+      # Loopback only — use a tunnel for Guest MCP / remote access.
+      - "127.0.0.1:18766:18766"
+    restart: unless-stopped
+
+volumes:
+  rag_data:
